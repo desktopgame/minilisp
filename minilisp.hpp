@@ -1,14 +1,13 @@
 // This software is in the public domain.
 
-#include <assert.h>
-#include <ctype.h>
-#include <stdarg.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cstdlib>
+#include <cstdio>
+#include <cstdarg>
+#include <cstring>
+#include <cstdint>
+#include <cctype>
+#include <cassert>
+
 
 #ifdef __linux__
 
@@ -19,18 +18,18 @@
 
 #define ATTR_NORETURN
 #pragma warning(disable : 4996)
-#define mmap(addr, length, prot, flags, fd, offset) (malloc(length))
-#define munmap(addr, size) (free(addr))
+#define mmap(addr, length, prot, flags, fd, offset) (std::malloc(length))
+#define munmap(addr, size) (std::free(addr))
 #endif
 
 namespace minilisp {
 ATTR_NORETURN void error(const char *fmt, ...) {
-    va_list ap;
+    std::va_list ap;
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, "\n");
+    std::vfprintf(stderr, fmt, ap);
+	std::fprintf(stderr, "\n");
     va_end(ap);
-    exit(1);
+	std::exit(1);
 }
 
 //======================================================================
@@ -264,7 +263,7 @@ inline Obj *forward(Obj *obj) {
 
     // Otherwise, the object has not been moved yet. Move it.
     Obj *newloc = scan2;
-    memcpy(newloc, obj, obj->size);
+    std::memcpy(newloc, obj, obj->size);
     scan2 = (Obj *)((uint8_t *)scan2 + obj->size);
 
     // Put a tombstone at the location where the object used to occupy, so that the following call
@@ -361,7 +360,7 @@ Obj *cons(void *root, Obj **car, Obj **cdr) {
 
 Obj *make_symbol(void *root, const char *name) {
     Obj *sym = alloc(root, TSYMBOL, strlen(name) + 1);
-    strcpy(sym->name, name);
+	std::strcpy(sym->name, name);
     return sym;
 }
 
@@ -484,7 +483,7 @@ Obj *read_list(ScannerT& scanner, void *root) {
 // but return the existing one.
 Obj *intern(void *root, const char *name) {
     for (Obj *p = Symbols; p != Nil; p = p->cdr)
-        if (strcmp(name, p->car->name) == 0)
+        if (std::strcmp(name, p->car->name) == 0)
             return p->car;
     DEFINE1(sym);
     *sym = make_symbol(root, name);
@@ -505,8 +504,8 @@ Obj *read_quote(ScannerT& scanner, void *root) {
 
 template<typename ScannerT>
 int read_number(ScannerT& scanner, int val) {
-    while (isdigit(scanner.peek()))
-        val = val * 10 + (getchar() - '0');
+    while (std::isdigit(scanner.peek()))
+        val = val * 10 + (scanner.read() - '0');
     return val;
 }
 
@@ -515,7 +514,7 @@ Obj *read_symbol(ScannerT& scanner, void *root, char c) {
     char buf[SYMBOL_MAX_LEN + 1];
     buf[0] = c;
     int len = 1;
-    while (isalnum(peek()) || strchr(symbol_chars, scanner.peek())) {
+    while (std::isalnum(peek()) || std::strchr(symbol_chars, scanner.peek())) {
         if (SYMBOL_MAX_LEN <= len)
             error("Symbol name too long");
         buf[len++] = getchar();
@@ -544,11 +543,11 @@ Obj *read_expr(ScannerT& scanner, void *root) {
             return Dot;
         if (c == '\'')
             return read_quote(scanner, root);
-        if (isdigit(c))
+        if (std::isdigit(c))
             return make_int(root, read_number(scanner, c - '0'));
-        if (c == '-' && isdigit(peek()))
+        if (c == '-' && std::isdigit(peek()))
             return make_int(root, -read_number(scanner, 0));
-        if (isalpha(c) || strchr(symbol_chars, c))
+        if (std::isalpha(c) || std::strchr(symbol_chars, c))
             return read_symbol(scanner, root, c);
         error("Don't know how to handle %c", c);
     }
@@ -558,25 +557,25 @@ Obj *read_expr(ScannerT& scanner, void *root) {
 void print(Obj *obj) {
     switch (obj->type) {
     case TCELL:
-        printf("(");
+        std::printf("(");
         for (;;) {
             print(obj->car);
             if (obj->cdr == Nil)
                 break;
             if (obj->cdr->type != TCELL) {
-                printf(" . ");
+				std::printf(" . ");
                 print(obj->cdr);
                 break;
             }
-            printf(" ");
+			std::printf(" ");
             obj = obj->cdr;
         }
-        printf(")");
+		std::printf(")");
         return;
 
 #define CASE(type, ...)                         \
     case type:                                  \
-        printf(__VA_ARGS__);                    \
+        std::printf(__VA_ARGS__);                    \
         return
     CASE(TINT, "%d", obj->value);
     CASE(TSYMBOL, "%s", obj->name);
@@ -931,7 +930,7 @@ Obj *prim_println(void *root, Obj **env, Obj **list) {
     DEFINE1(tmp);
     *tmp = (*list)->car;
     print(eval(root, env, tmp));
-    printf("\n");
+    std::printf("\n");
     return Nil;
 }
 
@@ -1007,7 +1006,7 @@ void define_primitives(void *root, Obj **env) {
 
 // Returns true if the environment variable is defined and not the empty string.
 static bool getEnvFlag(const char *name) {
-    char *val = getenv(name);
+    char *val = std::getenv(name);
     return val && val[0];
 }
 
@@ -1039,6 +1038,6 @@ int main(int argc, char **argv) {
         if (*expr == Dot)
             error("Stray dot");
         print(eval(root, env, expr));
-        printf("\n");
+        std::printf("\n");
     }
 }
