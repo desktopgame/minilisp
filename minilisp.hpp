@@ -23,7 +23,8 @@
 #define munmap(addr, size) (free(addr))
 #endif
 
-static ATTR_NORETURN void error(const char *fmt, ...) {
+namespace minilisp {
+ATTR_NORETURN void error(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -102,19 +103,19 @@ typedef struct Obj {
 } Obj;
 
 // Constants
-static Obj TrueV = Obj{ TTRUE };
-static Obj NilV = Obj{ TNIL };
-static Obj DotV = Obj{ TDOT };
-static Obj CparenV = Obj{ TCPAREN };
+Obj TrueV = Obj{ TTRUE };
+Obj NilV = Obj{ TNIL };
+Obj DotV = Obj{ TDOT };
+Obj CparenV = Obj{ TCPAREN };
 
-static Obj *True = &TrueV;
-static Obj *Nil = &NilV;
-static Obj *Dot = &DotV;
-static Obj *Cparen = &CparenV;
+Obj *True = &TrueV;
+Obj *Nil = &NilV;
+Obj *Dot = &DotV;
+Obj *Cparen = &CparenV;
 
 // The list containing all symbols. Such data structure is traditionally called the "obarray", but I
 // avoid using it as a variable name as this is not an array but a list.
-static Obj *Symbols;
+Obj *Symbols;
 
 //======================================================================
 // Memory management
@@ -124,20 +125,20 @@ static Obj *Symbols;
 #define MEMORY_SIZE 65536
 
 // The pointer pointing to the beginning of the current heap
-static void *memory;
+void *memory;
 
 // The pointer pointing to the beginning of the old heap
-static void *from_space;
+void *from_space;
 
 // The number of bytes allocated from the heap
-static size_t mem_nused = 0;
+size_t mem_nused = 0;
 
 // Flags to debug GC
-static bool gc_running = false;
-static bool debug_gc = false;
-static bool always_gc = false;
+bool gc_running = false;
+bool debug_gc = false;
+bool always_gc = false;
 
-static void gc(void *root);
+void gc(void *root);
 
 // Currently we are using Cheney's copying GC algorithm, with which the available memory is split
 // into two halves and all objects are moved from one half to another every time GC is invoked. That
@@ -192,12 +193,12 @@ static void gc(void *root);
 // Round up the given value to a multiple of size. Size must be a power of 2. It adds size - 1
 // first, then zero-ing the least significant bits to make the result a multiple of size. I know
 // these bit operations may look a little bit tricky, but it's efficient and thus frequently used.
-static inline size_t roundup(size_t var, size_t size) {
+inline size_t roundup(size_t var, size_t size) {
     return (var + size - 1) & ~(size - 1);
 }
 
 // Allocates memory block. This may start GC if we don't have enough memory.
-static Obj *alloc(void *root, int type, size_t size) {
+Obj *alloc(void *root, int type, size_t size) {
     // The object must be large enough to contain a pointer for the forwarding pointer. Make it
     // larger if it's smaller than that.
     size = roundup(size, sizeof(void *));
@@ -244,12 +245,12 @@ static Obj *alloc(void *root, int type, size_t size) {
 // to-space. The objects before "scan1" are the objects that are fully copied. The objects between
 // "scan1" and "scan2" have already been copied, but may contain pointers to the from-space. "scan2"
 // points to the beginning of the free space.
-static Obj *scan1;
-static Obj *scan2;
+Obj *scan1;
+Obj *scan2;
 
 // Moves one object from the from-space to the to-space. Returns the object's new address. If the
 // object has already been moved, does nothing but just returns the new address.
-static inline Obj *forward(Obj *obj) {
+inline Obj *forward(Obj *obj) {
     // If the object's address is not in the from-space, the object is not managed by GC nor it
     // has already been moved to the to-space.
     ptrdiff_t offset = (uint8_t *)obj - (uint8_t *)from_space;
@@ -273,12 +274,12 @@ static inline Obj *forward(Obj *obj) {
     return newloc;
 }
 
-static void *alloc_semispace() {
+void *alloc_semispace() {
     return mmap(NULL, MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 }
 
 // Copies the root objects.
-static void forward_root_objects(void *root) {
+void forward_root_objects(void *root) {
     Symbols = forward(Symbols);
     for (void **frame = reinterpret_cast<void**>(root); frame; frame = *(void ***)frame)
         for (int i = 1; frame[i] != ROOT_END; i++)
@@ -288,7 +289,7 @@ static void forward_root_objects(void *root) {
 
 // Implements Cheney's copying garbage collection algorithm.
 // http://en.wikipedia.org/wiki/Cheney%27s_algorithm
-static void gc(void *root) {
+void gc(void *root) {
     assert(!gc_running);
     gc_running = true;
 
@@ -345,32 +346,32 @@ static void gc(void *root) {
 // Constructors
 //======================================================================
 
-static Obj *make_int(void *root, int value) {
+Obj *make_int(void *root, int value) {
     Obj *r = alloc(root, TINT, sizeof(int));
     r->value = value;
     return r;
 }
 
-static Obj *cons(void *root, Obj **car, Obj **cdr) {
+Obj *cons(void *root, Obj **car, Obj **cdr) {
     Obj *cell = alloc(root, TCELL, sizeof(Obj *) * 2);
     cell->car = *car;
     cell->cdr = *cdr;
     return cell;
 }
 
-static Obj *make_symbol(void *root, const char *name) {
+Obj *make_symbol(void *root, const char *name) {
     Obj *sym = alloc(root, TSYMBOL, strlen(name) + 1);
     strcpy(sym->name, name);
     return sym;
 }
 
-static Obj *make_primitive(void *root, Primitive *fn) {
+Obj *make_primitive(void *root, Primitive *fn) {
     Obj *r = alloc(root, TPRIMITIVE, sizeof(Primitive *));
     r->fn = fn;
     return r;
 }
 
-static Obj *make_function(void *root, Obj **env, int type, Obj **params, Obj **body) {
+Obj *make_function(void *root, Obj **env, int type, Obj **params, Obj **body) {
     assert(type == TFUNCTION || type == TMACRO);
     Obj *r = alloc(root, type, sizeof(Obj *) * 3);
     r->params = *params;
@@ -379,7 +380,7 @@ static Obj *make_function(void *root, Obj **env, int type, Obj **params, Obj **b
     return r;
 }
 
-struct Obj *make_env(void *root, Obj **vars, Obj **up) {
+Obj *make_env(void *root, Obj **vars, Obj **up) {
     Obj *r = alloc(root, TENV, sizeof(Obj *) * 2);
     r->vars = *vars;
     r->up = *up;
@@ -387,7 +388,7 @@ struct Obj *make_env(void *root, Obj **vars, Obj **up) {
 }
 
 // Returns ((x . y) . a)
-static Obj *acons(void *root, Obj **x, Obj **y, Obj **a) {
+Obj *acons(void *root, Obj **x, Obj **y, Obj **a) {
     DEFINE1(cell);
     *cell = cons(root, x, y);
     return cons(root, cell, a);
@@ -402,16 +403,16 @@ static Obj *acons(void *root, Obj **x, Obj **y, Obj **a) {
 #define SYMBOL_MAX_LEN 200
 const char symbol_chars[] = "~!@#$%^&*-_=+:/?<>";
 
-static Obj *read_expr(void *root);
+Obj *read_expr(void *root);
 
-static int peek(void) {
+int peek(void) {
     int c = getchar();
     ungetc(c, stdin);
     return c;
 }
 
 // Destructively reverses the given list.
-static Obj *reverse(Obj *p) {
+Obj *reverse(Obj *p) {
     Obj *ret = Nil;
     while (p != Nil) {
         Obj *head = p;
@@ -423,7 +424,7 @@ static Obj *reverse(Obj *p) {
 }
 
 // Skips the input until newline is found. Newline is one of \r, \r\n or \n.
-static void skip_line(void) {
+void skip_line(void) {
     for (;;) {
         int c = getchar();
         if (c == EOF || c == '\n')
@@ -437,7 +438,7 @@ static void skip_line(void) {
 }
 
 // Reads a list. Note that '(' has already been read.
-static Obj *read_list(void *root) {
+Obj *read_list(void *root) {
     DEFINE3(obj, head, last);
     *head = Nil;
     for (;;) {
@@ -460,7 +461,7 @@ static Obj *read_list(void *root) {
 
 // May create a new symbol. If there's a symbol with the same name, it will not create a new symbol
 // but return the existing one.
-static Obj *intern(void *root, const char *name) {
+Obj *intern(void *root, const char *name) {
     for (Obj *p = Symbols; p != Nil; p = p->cdr)
         if (strcmp(name, p->car->name) == 0)
             return p->car;
@@ -471,7 +472,7 @@ static Obj *intern(void *root, const char *name) {
 }
 
 // Reader marcro ' (single quote). It reads an expression and returns (quote <expr>).
-static Obj *read_quote(void *root) {
+Obj *read_quote(void *root) {
     DEFINE2(sym, tmp);
     *sym = intern(root, "quote");
     *tmp = read_expr(root);
@@ -480,13 +481,13 @@ static Obj *read_quote(void *root) {
     return *tmp;
 }
 
-static int read_number(int val) {
+int read_number(int val) {
     while (isdigit(peek()))
         val = val * 10 + (getchar() - '0');
     return val;
 }
 
-static Obj *read_symbol(void *root, char c) {
+Obj *read_symbol(void *root, char c) {
     char buf[SYMBOL_MAX_LEN + 1];
     buf[0] = c;
     int len = 1;
@@ -499,7 +500,7 @@ static Obj *read_symbol(void *root, char c) {
     return intern(root, buf);
 }
 
-static Obj *read_expr(void *root) {
+Obj *read_expr(void *root) {
     for (;;) {
         int c = getchar();
         if (c == ' ' || c == '\n' || c == '\r' || c == '\t')
@@ -529,7 +530,7 @@ static Obj *read_expr(void *root) {
 }
 
 // Prints the given object.
-static void print(Obj *obj) {
+void print(Obj *obj) {
     switch (obj->type) {
     case TCELL:
         printf("(");
@@ -567,7 +568,7 @@ static void print(Obj *obj) {
 }
 
 // Returns the length of the given list. -1 if it's not a proper list.
-static int length(Obj *list) {
+int length(Obj *list) {
     int len = 0;
     for (; list->type == TCELL; list = list->cdr)
         len++;
@@ -578,17 +579,24 @@ static int length(Obj *list) {
 // Evaluator
 //======================================================================
 
-static Obj *eval(void *root, Obj **env, Obj **obj);
+Obj *eval(void *root, Obj **env, Obj **obj);
 
-static void add_variable(void *root, Obj **env, Obj **sym, Obj **val) {
+void add_variable(void *root, Obj **env, Obj **sym, Obj **val) {
     DEFINE2(vars, tmp);
     *vars = (*env)->vars;
     *tmp = acons(root, sym, val, vars);
     (*env)->vars = *tmp;
 }
 
+void add_primitive(void *root, Obj **env, const char *name, Primitive *fn) {
+	DEFINE2(sym, prim);
+	*sym = intern(root, name);
+	*prim = make_primitive(root, fn);
+	add_variable(root, env, sym, prim);
+}
+
 // Returns a newly created environment frame.
-static Obj *push_env(void *root, Obj **env, Obj **vars, Obj **vals) {
+Obj *push_env(void *root, Obj **env, Obj **vars, Obj **vals) {
     DEFINE3(map, sym, val);
     *map = Nil;
     for (; (*vars)->type == TCELL; *vars = (*vars)->cdr, *vals = (*vals)->cdr) {
@@ -604,7 +612,7 @@ static Obj *push_env(void *root, Obj **env, Obj **vars, Obj **vals) {
 }
 
 // Evaluates the list elements from head and returns the last return value.
-static Obj *progn(void *root, Obj **env, Obj **list) {
+Obj *progn(void *root, Obj **env, Obj **list) {
     DEFINE2(lp, r);
     for (*lp = *list; *lp != Nil; *lp = (*lp)->cdr) {
         *r = (*lp)->car;
@@ -614,7 +622,7 @@ static Obj *progn(void *root, Obj **env, Obj **list) {
 }
 
 // Evaluates all the list elements and returns their return values as a new list.
-static Obj *eval_list(void *root, Obj **env, Obj **list) {
+Obj *eval_list(void *root, Obj **env, Obj **list) {
     DEFINE4(head, lp, expr, result);
     *head = Nil;
     for (lp = list; *lp != Nil; *lp = (*lp)->cdr) {
@@ -625,11 +633,11 @@ static Obj *eval_list(void *root, Obj **env, Obj **list) {
     return reverse(*head);
 }
 
-static bool is_list(Obj *obj) {
+bool is_list(Obj *obj) {
     return obj == Nil || obj->type == TCELL;
 }
 
-static Obj *apply_func(void *root, Obj **env, Obj **fn, Obj **args) {
+Obj *apply_func(void *root, Obj **env, Obj **fn, Obj **args) {
     DEFINE3(params, newenv, body);
     *params = (*fn)->params;
     *newenv = (*fn)->env;
@@ -639,7 +647,7 @@ static Obj *apply_func(void *root, Obj **env, Obj **fn, Obj **args) {
 }
 
 // Apply fn with args.
-static Obj *apply(void *root, Obj **env, Obj **fn, Obj **args) {
+Obj *apply(void *root, Obj **env, Obj **fn, Obj **args) {
     if (!is_list(*args))
         error("argument must be a list");
     if ((*fn)->type == TPRIMITIVE)
@@ -653,7 +661,7 @@ static Obj *apply(void *root, Obj **env, Obj **fn, Obj **args) {
 }
 
 // Searches for a variable by symbol. Returns null if not found.
-static Obj *find(Obj **env, Obj *sym) {
+Obj *find(Obj **env, Obj *sym) {
     for (Obj *p = *env; p != Nil; p = p->up) {
         for (Obj *cell = p->vars; cell != Nil; cell = cell->cdr) {
             Obj *bind = cell->car;
@@ -665,7 +673,7 @@ static Obj *find(Obj **env, Obj *sym) {
 }
 
 // Expands the given macro application form.
-static Obj *macroexpand(void *root, Obj **env, Obj **obj) {
+Obj *macroexpand(void *root, Obj **env, Obj **obj) {
     if ((*obj)->type != TCELL || (*obj)->car->type != TSYMBOL)
         return *obj;
     DEFINE3(bind, macro, args);
@@ -712,19 +720,20 @@ static Obj *eval(void *root, Obj **env, Obj **obj) {
     }
 }
 
+namespace {
 //======================================================================
 // Primitive functions and special forms
 //======================================================================
 
 // 'expr
-static Obj *prim_quote(void *root, Obj **env, Obj **list) {
+Obj *prim_quote(void *root, Obj **env, Obj **list) {
     if (length(*list) != 1)
         error("Malformed quote");
     return (*list)->car;
 }
 
 // (cons expr expr)
-static Obj *prim_cons(void *root, Obj **env, Obj **list) {
+Obj *prim_cons(void *root, Obj **env, Obj **list) {
     if (length(*list) != 2)
         error("Malformed cons");
     Obj *cell = eval_list(root, env, list);
@@ -733,7 +742,7 @@ static Obj *prim_cons(void *root, Obj **env, Obj **list) {
 }
 
 // (car <cell>)
-static Obj *prim_car(void *root, Obj **env, Obj **list) {
+Obj *prim_car(void *root, Obj **env, Obj **list) {
     Obj *args = eval_list(root, env, list);
     if (args->car->type != TCELL || args->cdr != Nil)
         error("Malformed car");
@@ -741,7 +750,7 @@ static Obj *prim_car(void *root, Obj **env, Obj **list) {
 }
 
 // (cdr <cell>)
-static Obj *prim_cdr(void *root, Obj **env, Obj **list) {
+Obj *prim_cdr(void *root, Obj **env, Obj **list) {
     Obj *args = eval_list(root, env, list);
     if (args->car->type != TCELL || args->cdr != Nil)
         error("Malformed cdr");
@@ -749,7 +758,7 @@ static Obj *prim_cdr(void *root, Obj **env, Obj **list) {
 }
 
 // (setq <symbol> expr)
-static Obj *prim_setq(void *root, Obj **env, Obj **list) {
+Obj *prim_setq(void *root, Obj **env, Obj **list) {
     if (length(*list) != 2 || (*list)->car->type != TSYMBOL)
         error("Malformed setq");
     DEFINE2(bind, value);
@@ -763,7 +772,7 @@ static Obj *prim_setq(void *root, Obj **env, Obj **list) {
 }
 
 // (setcar <cell> expr)
-static Obj *prim_setcar(void *root, Obj **env, Obj **list) {
+Obj *prim_setcar(void *root, Obj **env, Obj **list) {
     DEFINE1(args);
     *args = eval_list(root, env, list);
     if (length(*args) != 2 || (*args)->car->type != TCELL)
@@ -773,7 +782,7 @@ static Obj *prim_setcar(void *root, Obj **env, Obj **list) {
 }
 
 // (while cond expr ...)
-static Obj *prim_while(void *root, Obj **env, Obj **list) {
+Obj *prim_while(void *root, Obj **env, Obj **list) {
     if (length(*list) < 2)
         error("Malformed while");
     DEFINE2(cond, exprs);
@@ -786,7 +795,7 @@ static Obj *prim_while(void *root, Obj **env, Obj **list) {
 }
 
 // (gensym)
-static Obj *prim_gensym(void *root, Obj **env, Obj **list) {
+Obj *prim_gensym(void *root, Obj **env, Obj **list) {
   static int count = 0;
   char buf[10];
   snprintf(buf, sizeof(buf), "G__%d", count++);
@@ -794,7 +803,7 @@ static Obj *prim_gensym(void *root, Obj **env, Obj **list) {
 }
 
 // (+ <integer> ...)
-static Obj *prim_plus(void *root, Obj **env, Obj **list) {
+Obj *prim_plus(void *root, Obj **env, Obj **list) {
     int sum = 0;
     for (Obj *args = eval_list(root, env, list); args != Nil; args = args->cdr) {
         if (args->car->type != TINT)
@@ -805,7 +814,7 @@ static Obj *prim_plus(void *root, Obj **env, Obj **list) {
 }
 
 // (- <integer> ...)
-static Obj *prim_minus(void *root, Obj **env, Obj **list) {
+Obj *prim_minus(void *root, Obj **env, Obj **list) {
     Obj *args = eval_list(root, env, list);
     for (Obj *p = args; p != Nil; p = p->cdr)
         if (p->car->type != TINT)
@@ -819,7 +828,7 @@ static Obj *prim_minus(void *root, Obj **env, Obj **list) {
 }
 
 // (< <integer> <integer>)
-static Obj *prim_lt(void *root, Obj **env, Obj **list) {
+Obj *prim_lt(void *root, Obj **env, Obj **list) {
     Obj *args = eval_list(root, env, list);
     if (length(args) != 2)
         error("malformed <");
@@ -830,7 +839,7 @@ static Obj *prim_lt(void *root, Obj **env, Obj **list) {
     return x->value < y->value ? True : Nil;
 }
 
-static Obj *handle_function(void *root, Obj **env, Obj **list, int type) {
+Obj *handle_function(void *root, Obj **env, Obj **list, int type) {
     if ((*list)->type != TCELL || !is_list((*list)->car) || (*list)->cdr->type != TCELL)
         error("Malformed lambda");
     Obj *p = (*list)->car;
@@ -846,11 +855,11 @@ static Obj *handle_function(void *root, Obj **env, Obj **list, int type) {
 }
 
 // (lambda (<symbol> ...) expr ...)
-static Obj *prim_lambda(void *root, Obj **env, Obj **list) {
+Obj *prim_lambda(void *root, Obj **env, Obj **list) {
     return handle_function(root, env, list, TFUNCTION);
 }
 
-static Obj *handle_defun(void *root, Obj **env, Obj **list, int type) {
+Obj *handle_defun(void *root, Obj **env, Obj **list, int type) {
     if ((*list)->car->type != TSYMBOL || (*list)->cdr->type != TCELL)
         error("Malformed defun");
     DEFINE3(fn, sym, rest);
@@ -862,12 +871,12 @@ static Obj *handle_defun(void *root, Obj **env, Obj **list, int type) {
 }
 
 // (defun <symbol> (<symbol> ...) expr ...)
-static Obj *prim_defun(void *root, Obj **env, Obj **list) {
+Obj *prim_defun(void *root, Obj **env, Obj **list) {
     return handle_defun(root, env, list, TFUNCTION);
 }
 
 // (define <symbol> expr)
-static Obj *prim_define(void *root, Obj **env, Obj **list) {
+Obj *prim_define(void *root, Obj **env, Obj **list) {
     if (length(*list) != 2 || (*list)->car->type != TSYMBOL)
         error("Malformed define");
     DEFINE2(sym, value);
@@ -879,12 +888,12 @@ static Obj *prim_define(void *root, Obj **env, Obj **list) {
 }
 
 // (defmacro <symbol> (<symbol> ...) expr ...)
-static Obj *prim_defmacro(void *root, Obj **env, Obj **list) {
+Obj *prim_defmacro(void *root, Obj **env, Obj **list) {
     return handle_defun(root, env, list, TMACRO);
 }
 
 // (macroexpand expr)
-static Obj *prim_macroexpand(void *root, Obj **env, Obj **list) {
+Obj *prim_macroexpand(void *root, Obj **env, Obj **list) {
     if (length(*list) != 1)
         error("Malformed macroexpand");
     DEFINE1(body);
@@ -893,7 +902,7 @@ static Obj *prim_macroexpand(void *root, Obj **env, Obj **list) {
 }
 
 // (println expr)
-static Obj *prim_println(void *root, Obj **env, Obj **list) {
+Obj *prim_println(void *root, Obj **env, Obj **list) {
     DEFINE1(tmp);
     *tmp = (*list)->car;
     print(eval(root, env, tmp));
@@ -902,7 +911,7 @@ static Obj *prim_println(void *root, Obj **env, Obj **list) {
 }
 
 // (if expr expr expr ...)
-static Obj *prim_if(void *root, Obj **env, Obj **list) {
+Obj *prim_if(void *root, Obj **env, Obj **list) {
     if (length(*list) < 2)
         error("Malformed if");
     DEFINE3(cond, then, els);
@@ -917,7 +926,7 @@ static Obj *prim_if(void *root, Obj **env, Obj **list) {
 }
 
 // (= <integer> <integer>)
-static Obj *prim_num_eq(void *root, Obj **env, Obj **list) {
+Obj *prim_num_eq(void *root, Obj **env, Obj **list) {
     if (length(*list) != 2)
         error("Malformed =");
     Obj *values = eval_list(root, env, list);
@@ -929,27 +938,20 @@ static Obj *prim_num_eq(void *root, Obj **env, Obj **list) {
 }
 
 // (eq expr expr)
-static Obj *prim_eq(void *root, Obj **env, Obj **list) {
+Obj *prim_eq(void *root, Obj **env, Obj **list) {
     if (length(*list) != 2)
         error("Malformed eq");
     Obj *values = eval_list(root, env, list);
     return values->car == values->cdr->car ? True : Nil;
 }
 
-static void add_primitive(void *root, Obj **env, const char *name, Primitive *fn) {
-    DEFINE2(sym, prim);
-    *sym = intern(root, name);
-    *prim = make_primitive(root, fn);
-    add_variable(root, env, sym, prim);
-}
-
-static void define_constants(void *root, Obj **env) {
+void define_constants(void *root, Obj **env) {
     DEFINE1(sym);
     *sym = intern(root, "t");
     add_variable(root, env, sym, &True);
 }
 
-static void define_primitives(void *root, Obj **env) {
+void define_primitives(void *root, Obj **env) {
     add_primitive(root, env, "quote", prim_quote);
     add_primitive(root, env, "cons", prim_cons);
     add_primitive(root, env, "car", prim_car);
@@ -971,6 +973,8 @@ static void define_primitives(void *root, Obj **env) {
     add_primitive(root, env, "eq", prim_eq);
     add_primitive(root, env, "println", prim_println);
 }
+}
+}
 
 //======================================================================
 // Entry point
@@ -983,6 +987,7 @@ static bool getEnvFlag(const char *name) {
 }
 
 int main(int argc, char **argv) {
+	using namespace minilisp;
     // Debug flags
     debug_gc = getEnvFlag("MINILISP_DEBUG_GC");
     always_gc = getEnvFlag("MINILISP_ALWAYS_GC");
