@@ -1079,33 +1079,60 @@ void *alloc_semispace() {
 //======================================================================
 
 
-int main(int argc, char **argv) {
+int test(const std::string& testName, const std::string& expect, const std::string& program, bool requirePass) {
 	using namespace minilisp;
 	Context context;
+	int code = 0;
 
 	// Constants and primitives
-    DEFINE3(env, expr, obj);
-    *env = make_env(context, &Nil, &Nil);
-    define_constants(context, env);
-    define_primitives(context, env);
+	DEFINE3(env, obj, ret);
+	*env = make_env(context, &Nil, &Nil);
+	define_constants(context, env);
+	define_primitives(context, env);
 
-	TextScanner ts("(println 1)");
-	*obj = read_expr(ts, context);
-	print(eval(context, env, obj));
-	std::printf("\n");
+	try {
+		TextScanner ts(program);
+		*obj = read_expr(ts, context);
+		*ret = eval(context, env, obj);
+		print(*ret);
+		std::printf("\n");
+		std::string res = to_string(*ret);
 
-    // The main loop
-	FileScanner fs;
-    for (;;) {
-        *expr = read_expr(fs, context);
-        if (!*expr)
-            return 0;
-        if (*expr == Cparen)
-            error("Stray close parenthesis");
-        if (*expr == Dot)
-            error("Stray dot");
-        print(eval(context, env, expr));
-        std::printf("\n");
-    }
+		if ((requirePass && res == expect) || (!requirePass && res != expect)) {
+			std::cout << testName << " is Pass" << std::endl;
+		} else {
+			std::cout << testName << " is Fail" << std::endl;
+			code = -1;
+		}
+	}
+	catch (Exception& e) {
+		if (!requirePass) {
+			std::cout << testName << " is Pass" << std::endl;
+		} else {
+			std::cout << testName << " is Fail" << std::endl;
+			code = -1;
+		}
+	}
+	return code;
+}
+
+int pass(const std::string& name, const std::string& expect, const std::string& program) {
+	return test(name, expect, program,true);
+}
+
+int fail(const std::string& name, const std::string& expect, const std::string& program) {
+	return test(name, expect, program, false);
+}
+
+int main(int argc, char **argv) {
+	pass("integer", "1", "1");
+	pass("integer", "-1", "-1");
+	pass("symbol", "a", "'a");
+	pass("quote", "a", "(quote a)");
+	pass("quote", "63", "'63");
+	pass("quote", "(+ 1 2)", "'(+ 1 2)");
+	pass("+", "3", "(+ 1 2)");
+	pass("+", "-2", "(+ 1 -3)");
+	return 0;
 }
 #endif
