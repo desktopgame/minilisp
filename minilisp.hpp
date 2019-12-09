@@ -13,6 +13,7 @@
 #include <functional>
 #include <vector>
 #include <string>
+#include <stdexcept>
 
 
 #ifdef __linux__
@@ -29,13 +30,17 @@
 #endif
 
 namespace minilisp {
+class Exception : std::logic_error {
+public:
+	Exception(const std::string& msg) : std::logic_error(msg){}
+};
 ATTR_NORETURN void error(const char *fmt, ...) {
     std::va_list ap;
     va_start(ap, fmt);
     std::vfprintf(stderr, fmt, ap);
 	std::fprintf(stderr, "\n");
     va_end(ap);
-	throw std::logic_error("lisp interpreter was crash.");
+	throw Exception("lisp interpreter was crash.");
 }
 
 //======================================================================
