@@ -723,7 +723,7 @@ Obj *macroexpand(Context& context, Obj **env, Obj **obj) {
 }
 
 // Evaluates the S expression.
-static Obj *eval(Context& context, Obj **env, Obj **obj) {
+Obj *eval(Context& context, Obj **env, Obj **obj) {
     switch ((*obj)->type) {
     case TINT:
     case TPRIMITIVE:
