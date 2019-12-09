@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <cctype>
 #include <cassert>
+#include <functional>
+#include <vector>
 #include <string>
 
 
@@ -64,7 +66,7 @@ enum {
 // Typedef for the primitive function
 struct Obj;
 class Context;
-typedef struct Obj *Primitive(Context& context, struct Obj **env, struct Obj **args);
+using Primitive = std::function<struct Obj*(Context&, struct Obj **, struct Obj **)>;
 
 // The object type
 typedef struct Obj {
@@ -88,7 +90,8 @@ typedef struct Obj {
         // Symbol
         char name[1];
         // Primitive
-        Primitive *fn;
+		// NOTE: C style union is can't contain std::function
+        int fn;
         // Function or Macro
         struct {
             struct Obj *params;
@@ -147,14 +150,14 @@ struct Context {
 	Obj *scan1;
 	Obj *scan2;
 
-
+	std::vector<Primitive> primitives;
 	void* root;
 
 	explicit Context()
 	: Symbols(nullptr), memory(nullptr), from_space(nullptr),
 	  mem_nused(0), gc_running(false), debug_gc(false),
 	  always_gc(false), scan1(nullptr), scan2(nullptr),
-	  root(nullptr) {
+	  primitives(), root(nullptr) {
 		// Debug flags
 		this->debug_gc = getEnvFlag("MINILISP_DEBUG_GC");
 		this->always_gc = getEnvFlag("MINILISP_ALWAYS_GC");
@@ -387,7 +390,7 @@ Obj *make_symbol(Context& context, const char *name) {
     return sym;
 }
 
-Obj *make_primitive(Context& context, Primitive *fn) {
+Obj *make_primitive(Context& context, int fn) {
     Obj *r = alloc(context, TPRIMITIVE, sizeof(Primitive *));
     r->fn = fn;
     return r;
@@ -649,10 +652,11 @@ void add_variable(Context& context, Obj **env, Obj **sym, Obj **val) {
     (*env)->vars = *tmp;
 }
 
-void add_primitive(Context& context, Obj **env, const char *name, Primitive *fn) {
+void add_primitive(Context& context, Obj **env, const char *name, Primitive fn) {
 	DEFINE2(sym, prim);
 	*sym = intern(context, name);
-	*prim = make_primitive(context, fn);
+	*prim = make_primitive(context, static_cast<int>(context.primitives.size()));
+	context.primitives.emplace_back(fn);
 	add_variable(context, env, sym, prim);
 }
 
@@ -712,7 +716,7 @@ Obj *apply(Context& context, Obj **env, Obj **fn, Obj **args) {
     if (!is_list(*args))
         error("argument must be a list");
     if ((*fn)->type == TPRIMITIVE)
-        return (*fn)->fn(context, env, args);
+        return context.primitives.at((*fn)->fn)(context, env, args);
     if ((*fn)->type == TFUNCTION) {
         DEFINE1(eargs);
         *eargs = eval_list(context, env, args);
