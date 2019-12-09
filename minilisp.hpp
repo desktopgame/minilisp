@@ -13,6 +13,7 @@
 #include <functional>
 #include <vector>
 #include <string>
+#include <iostream>
 #include <stdexcept>
 
 
@@ -599,41 +600,58 @@ Obj *read_expr(ScannerT& scanner, Context& context) {
 }
 
 // Prints the given object.
-void print(Obj *obj) {
-    switch (obj->type) {
-    case TCELL:
-        std::printf("(");
-        for (;;) {
-            print(obj->car);
-            if (obj->cdr == Nil)
-                break;
-            if (obj->cdr->type != TCELL) {
-				std::printf(" . ");
-                print(obj->cdr);
-                break;
-            }
-			std::printf(" ");
-            obj = obj->cdr;
-        }
-		std::printf(")");
-        return;
+std::string to_string(Obj* obj) {
+	std::string buf;
+	switch (obj->type) {
+	case TCELL:
+		buf += "(";
+		for (;;) {
+			buf += to_string(obj->car);
+			if (obj->cdr == Nil)
+				break;
+			if (obj->cdr->type != TCELL) {
+				buf += " . ";
+				buf += to_string(obj->cdr);
+				break;
+			}
+			buf += " ";
+			obj = obj->cdr;
+		}
+		buf += ")";
+		break;
+	case TINT:
+		buf += std::to_string(obj->value);
+		break;
+	case TSYMBOL:
+		buf += obj->name;
+		break;
+	case TPRIMITIVE:
+		buf += "<primitive>";
+		break;
+	case TFUNCTION:
+		buf += "<function>";
+		break;
+	case TMACRO:
+		buf += "<macro>";
+		break;
+	case TMOVED:
+		buf += "<moved>";
+		break;
+	case TTRUE:
+		buf += "t";
+		break;
+	case TNIL:
+		buf += "()";
+		break;
+	default:
+		error("Bug: print: Unknown tag type: %d", obj->type);
+	}
+	return buf;
+}
 
-#define CASE(type, ...)                         \
-    case type:                                  \
-        std::printf(__VA_ARGS__);                    \
-        return
-    CASE(TINT, "%d", obj->value);
-    CASE(TSYMBOL, "%s", obj->name);
-    CASE(TPRIMITIVE, "<primitive>");
-    CASE(TFUNCTION, "<function>");
-    CASE(TMACRO, "<macro>");
-    CASE(TMOVED, "<moved>");
-    CASE(TTRUE, "t");
-    CASE(TNIL, "()");
-#undef CASE
-    default:
-        error("Bug: print: Unknown tag type: %d", obj->type);
-    }
+// Prints the given object.
+void print(Obj *obj) {
+	std::cout << to_string(obj);
 }
 
 // Returns the length of the given list. -1 if it's not a proper list.
