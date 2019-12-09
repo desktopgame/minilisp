@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cctype>
 #include <cassert>
+#include <string>
 
 
 #ifdef __linux__
@@ -453,6 +454,26 @@ struct FileScanner {
 		return c;
 	}
 };
+struct TextScanner {
+	std::string input;
+	int pos;
+
+	explicit TextScanner(const std::string& input) : input(input), pos(0){}
+	int read() {
+		if (pos >= static_cast<int>(input.size())) {
+			return EOF;
+		}
+		char c = input[pos];
+		pos++;
+		return static_cast<int>(c);
+	}
+	int peek() {
+		if (pos >= static_cast<int>(input.size())) {
+			return EOF;
+		}
+		return static_cast<int>(input[pos]);
+	}
+};
 
 // Skips the input until newline is found. Newline is one of \r, \r\n or \n.
 template<typename ScannerT>
@@ -530,7 +551,7 @@ Obj *read_symbol(ScannerT& scanner, Context& context, char c) {
     while (std::isalnum(scanner.peek()) || std::strchr(symbol_chars, scanner.peek())) {
         if (SYMBOL_MAX_LEN <= len)
             error("Symbol name too long");
-        buf[len++] = getchar();
+        buf[len++] = scanner.read();
     }
     buf[len] = '\0';
     return intern(context, buf);
@@ -1033,10 +1054,15 @@ int main(int argc, char **argv) {
 	Context context;
 
 	// Constants and primitives
-    DEFINE2(env, expr);
+    DEFINE3(env, expr, obj);
     *env = make_env(context, &Nil, &Nil);
     define_constants(context, env);
     define_primitives(context, env);
+
+	TextScanner ts("(println 1)");
+	*obj = read_expr(ts, context);
+	print(eval(context, env, obj));
+	std::printf("\n");
 
     // The main loop
 	FileScanner fs;
