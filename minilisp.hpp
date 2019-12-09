@@ -403,7 +403,8 @@ Obj *acons(void *root, Obj **x, Obj **y, Obj **a) {
 constexpr int SYMBOL_MAX_LEN = 200;
 constexpr char symbol_chars[] = "~!@#$%^&*-_=+:/?<>";
 
-Obj *read_expr(void *root);
+template<typename ScannerT>
+Obj *read_expr(ScannerT& scanner, void *root);
 
 int peek(void) {
     int c = getchar();
@@ -423,33 +424,53 @@ Obj *reverse(Obj *p) {
     return ret;
 }
 
+// ScannerT requires:
+// int peek()
+// int get()
+struct FileScanner {
+	FILE* input;
+	bool close;
+
+	explicit FileScanner(FILE* input, bool close) : input(input), close(close) {}
+	explicit FileScanner() : input(stdin), close(false){}
+	~FileScanner() { if (close) fclose(input); }
+	int read() { return fgetc(input); }
+	int peek() {
+		int c = fgetc(input);
+		ungetc(c, input);
+		return c;
+	}
+};
+
 // Skips the input until newline is found. Newline is one of \r, \r\n or \n.
-void skip_line(void) {
+template<typename ScannerT>
+void skip_line(ScannerT& scanner) {
     for (;;) {
-        int c = getchar();
+        int c = scanner.read();
         if (c == EOF || c == '\n')
             return;
         if (c == '\r') {
-            if (peek() == '\n')
-                getchar();
+            if (scanner.peek() == '\n')
+				scanner.read();
             return;
         }
     }
 }
 
 // Reads a list. Note that '(' has already been read.
-Obj *read_list(void *root) {
+template<typename ScannerT>
+Obj *read_list(ScannerT& scanner, void *root) {
     DEFINE3(obj, head, last);
     *head = Nil;
     for (;;) {
-        *obj = read_expr(root);
+        *obj = read_expr(scanner, root);
         if (!*obj)
             error("Unclosed parenthesis");
         if (*obj == Cparen)
             return reverse(*head);
         if (*obj == Dot) {
-            *last = read_expr(root);
-            if (read_expr(root) != Cparen)
+            *last = read_expr(scanner, root);
+            if (read_expr(scanner, root) != Cparen)
                 error("Closed parenthesis expected after dot");
             Obj *ret = reverse(*head);
             (*head)->cdr = *last;
@@ -472,26 +493,29 @@ Obj *intern(void *root, const char *name) {
 }
 
 // Reader marcro ' (single quote). It reads an expression and returns (quote <expr>).
-Obj *read_quote(void *root) {
+template<typename ScannerT>
+Obj *read_quote(ScannerT& scanner, void *root) {
     DEFINE2(sym, tmp);
     *sym = intern(root, "quote");
-    *tmp = read_expr(root);
+    *tmp = read_expr(scanner, root);
     *tmp = cons(root, tmp, &Nil);
     *tmp = cons(root, sym, tmp);
     return *tmp;
 }
 
-int read_number(int val) {
-    while (isdigit(peek()))
+template<typename ScannerT>
+int read_number(ScannerT& scanner, int val) {
+    while (isdigit(scanner.peek()))
         val = val * 10 + (getchar() - '0');
     return val;
 }
 
-Obj *read_symbol(void *root, char c) {
+template<typename ScannerT>
+Obj *read_symbol(ScannerT& scanner, void *root, char c) {
     char buf[SYMBOL_MAX_LEN + 1];
     buf[0] = c;
     int len = 1;
-    while (isalnum(peek()) || strchr(symbol_chars, peek())) {
+    while (isalnum(peek()) || strchr(symbol_chars, scanner.peek())) {
         if (SYMBOL_MAX_LEN <= len)
             error("Symbol name too long");
         buf[len++] = getchar();
@@ -500,31 +524,32 @@ Obj *read_symbol(void *root, char c) {
     return intern(root, buf);
 }
 
-Obj *read_expr(void *root) {
+template<typename ScannerT>
+Obj *read_expr(ScannerT& scanner, void *root) {
     for (;;) {
-        int c = getchar();
+		int c = scanner.read();
         if (c == ' ' || c == '\n' || c == '\r' || c == '\t')
             continue;
         if (c == EOF)
             return NULL;
         if (c == ';') {
-            skip_line();
+            skip_line(scanner);
             continue;
         }
         if (c == '(')
-            return read_list(root);
+            return read_list(scanner, root);
         if (c == ')')
             return Cparen;
         if (c == '.')
             return Dot;
         if (c == '\'')
-            return read_quote(root);
+            return read_quote(scanner, root);
         if (isdigit(c))
-            return make_int(root, read_number(c - '0'));
+            return make_int(root, read_number(scanner, c - '0'));
         if (c == '-' && isdigit(peek()))
-            return make_int(root, -read_number(0));
+            return make_int(root, -read_number(scanner, 0));
         if (isalpha(c) || strchr(symbol_chars, c))
-            return read_symbol(root, c);
+            return read_symbol(scanner, root, c);
         error("Don't know how to handle %c", c);
     }
 }
@@ -1004,8 +1029,9 @@ int main(int argc, char **argv) {
     define_primitives(root, env);
 
     // The main loop
+	FileScanner fs;
     for (;;) {
-        *expr = read_expr(root);
+        *expr = read_expr(fs, root);
         if (!*expr)
             return 0;
         if (*expr == Cparen)
