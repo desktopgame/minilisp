@@ -9,9 +9,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 
-static __attribute((noreturn)) void error(char *fmt, ...) {
+#ifdef __linux__
+
+#include <sys/mman.h>
+#define ATTR_NORETURN __attribute((noreturn))
+
+#else
+
+#define ATTR_NORETURN
+#pragma warning(disable : 4996)
+#define mmap(addr, length, prot, flags, fd, offset) (malloc(length))
+#define munmap(addr, size) (free(addr))
+#endif
+
+static ATTR_NORETURN void error(char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -211,7 +223,7 @@ static Obj *alloc(void *root, int type, size_t size) {
         error("Memory exhausted");
 
     // Allocate the object.
-    Obj *obj = memory + mem_nused;
+    Obj *obj = (unsigned char*)memory + mem_nused;
     obj->type = type;
     obj->size = size;
     mem_nused += size;
