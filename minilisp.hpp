@@ -405,12 +405,6 @@ constexpr char symbol_chars[] = "~!@#$%^&*-_=+:/?<>";
 template<typename ScannerT>
 Obj *read_expr(ScannerT& scanner, void *root);
 
-int peek(void) {
-    int c = getchar();
-    ungetc(c, stdin);
-    return c;
-}
-
 // Destructively reverses the given list.
 Obj *reverse(Obj *p) {
     Obj *ret = Nil;
@@ -514,7 +508,7 @@ Obj *read_symbol(ScannerT& scanner, void *root, char c) {
     char buf[SYMBOL_MAX_LEN + 1];
     buf[0] = c;
     int len = 1;
-    while (std::isalnum(peek()) || std::strchr(symbol_chars, scanner.peek())) {
+    while (std::isalnum(scanner.peek()) || std::strchr(symbol_chars, scanner.peek())) {
         if (SYMBOL_MAX_LEN <= len)
             error("Symbol name too long");
         buf[len++] = getchar();
@@ -545,7 +539,7 @@ Obj *read_expr(ScannerT& scanner, void *root) {
             return read_quote(scanner, root);
         if (std::isdigit(c))
             return make_int(root, read_number(scanner, c - '0'));
-        if (c == '-' && std::isdigit(peek()))
+        if (c == '-' && std::isdigit(scanner.peek()))
             return make_int(root, -read_number(scanner, 0));
         if (std::isalpha(c) || std::strchr(symbol_chars, c))
             return read_symbol(scanner, root, c);
