@@ -1,3 +1,6 @@
+#pragma once
+#ifndef MINILISP_HPP
+#define MINILISP_HPP
 // This software is in the public domain.
 
 #include <cstdlib>
@@ -1078,3 +1081,4 @@ int main(int argc, char **argv) {
         std::printf("\n");
     }
 }
+#endif
