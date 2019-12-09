@@ -59,7 +59,8 @@ enum {
 
 // Typedef for the primitive function
 struct Obj;
-typedef struct Obj *Primitive(void *root, struct Obj **env, struct Obj **args);
+class Context;
+typedef struct Obj *Primitive(Context& context, struct Obj **env, struct Obj **args);
 
 // The object type
 typedef struct Obj {
@@ -112,9 +113,35 @@ Obj *Nil = &NilV;
 Obj *Dot = &DotV;
 Obj *Cparen = &CparenV;
 
-// The list containing all symbols. Such data structure is traditionally called the "obarray", but I
-// avoid using it as a variable name as this is not an array but a list.
-Obj *Symbols;
+struct Context {
+	// The list containing all symbols. Such data structure is traditionally called the "obarray", but I
+	// avoid using it as a variable name as this is not an array but a list.
+	Obj *Symbols;
+	// The pointer pointing to the beginning of the current heap
+	void *memory;
+
+	// The pointer pointing to the beginning of the old heap
+	void *from_space;
+
+	// The number of bytes allocated from the heap
+	size_t mem_nused = 0;
+
+	// Flags to debug GC
+	bool gc_running = false;
+	bool debug_gc = false;
+	bool always_gc = false;
+	// Cheney's algorithm uses two pointers to keep track of GC status. At first both pointers point to
+	// the beginning of the to-space. As GC progresses, they are moved towards the end of the
+	// to-space. The objects before "scan1" are the objects that are fully copied. The objects between
+	// "scan1" and "scan2" have already been copied, but may contain pointers to the from-space. "scan2"
+	// points to the beginning of the free space.
+	Obj *scan1;
+	Obj *scan2;
+
+
+	void* root;
+};
+
 
 //======================================================================
 // Memory management
@@ -123,21 +150,7 @@ Obj *Symbols;
 // The size of the heap in byte
 constexpr int MEMORY_SIZE = 65536;
 
-// The pointer pointing to the beginning of the current heap
-void *memory;
-
-// The pointer pointing to the beginning of the old heap
-void *from_space;
-
-// The number of bytes allocated from the heap
-size_t mem_nused = 0;
-
-// Flags to debug GC
-bool gc_running = false;
-bool debug_gc = false;
-bool always_gc = false;
-
-void gc(void *root);
+void gc(Context& context);
 
 // Currently we are using Cheney's copying GC algorithm, with which the available memory is split
 // into two halves and all objects are moved from one half to another every time GC is invoked. That
@@ -161,11 +174,11 @@ void gc(void *root);
 
 #define ADD_ROOT(size)                          \
     void *root_ADD_ROOT_[size + 2];             \
-    root_ADD_ROOT_[0] = root;                   \
+    root_ADD_ROOT_[0] = context.root;                   \
     for (int i = 1; i <= size; i++)             \
         root_ADD_ROOT_[i] = NULL;               \
     root_ADD_ROOT_[size + 1] = ROOT_END;        \
-    root = root_ADD_ROOT_
+    context.root = root_ADD_ROOT_
 
 #define DEFINE1(var1)                           \
     ADD_ROOT(1);                                \
@@ -197,7 +210,7 @@ inline size_t roundup(size_t var, size_t size) {
 }
 
 // Allocates memory block. This may start GC if we don't have enough memory.
-Obj *alloc(void *root, int type, size_t size) {
+Obj *alloc(Context& context, int type, size_t size) {
     // The object must be large enough to contain a pointer for the forwarding pointer. Make it
     // larger if it's smaller than that.
     size = roundup(size, sizeof(void *));
@@ -215,23 +228,23 @@ Obj *alloc(void *root, int type, size_t size) {
     // more predictable and repeatable. If there's a memory bug that the C variable has a direct
     // reference to a Lisp object, the pointer will become invalid by this GC call. Dereferencing
     // that will immediately cause SEGV.
-    if (always_gc && !gc_running)
-        gc(root);
+    if (context.always_gc && !context.gc_running)
+        gc(context);
 
     // Otherwise, run GC only when the available memory is not large enough.
-    if (!always_gc && MEMORY_SIZE < mem_nused + size)
-        gc(root);
+    if (!context.always_gc && MEMORY_SIZE < context.mem_nused + size)
+        gc(context);
 
     // Terminate the program if we couldn't satisfy the memory request. This can happen if the
     // requested size was too large or the from-space was filled with too many live objects.
-    if (MEMORY_SIZE < mem_nused + size)
+    if (MEMORY_SIZE < context.mem_nused + size)
         error("Memory exhausted");
 
     // Allocate the object.
-    Obj *obj = reinterpret_cast<Obj*>((unsigned char*)memory + mem_nused);
+    Obj *obj = reinterpret_cast<Obj*>((unsigned char*)context.memory + context.mem_nused);
     obj->type = type;
     obj->size = size;
-    mem_nused += size;
+	context.mem_nused += size;
     return obj;
 }
 
@@ -239,20 +252,12 @@ Obj *alloc(void *root, int type, size_t size) {
 // Garbage collector
 //======================================================================
 
-// Cheney's algorithm uses two pointers to keep track of GC status. At first both pointers point to
-// the beginning of the to-space. As GC progresses, they are moved towards the end of the
-// to-space. The objects before "scan1" are the objects that are fully copied. The objects between
-// "scan1" and "scan2" have already been copied, but may contain pointers to the from-space. "scan2"
-// points to the beginning of the free space.
-Obj *scan1;
-Obj *scan2;
-
 // Moves one object from the from-space to the to-space. Returns the object's new address. If the
 // object has already been moved, does nothing but just returns the new address.
-inline Obj *forward(Obj *obj) {
+inline Obj *forward(Context& context, Obj *obj) {
     // If the object's address is not in the from-space, the object is not managed by GC nor it
     // has already been moved to the to-space.
-    ptrdiff_t offset = (uint8_t *)obj - (uint8_t *)from_space;
+    ptrdiff_t offset = (uint8_t *)obj - (uint8_t *)context.from_space;
     if (offset < 0 || MEMORY_SIZE <= offset)
         return obj;
 
@@ -262,9 +267,9 @@ inline Obj *forward(Obj *obj) {
         return reinterpret_cast<Obj*>(obj->moved);
 
     // Otherwise, the object has not been moved yet. Move it.
-    Obj *newloc = scan2;
+    Obj *newloc = context.scan2;
     std::memcpy(newloc, obj, obj->size);
-    scan2 = (Obj *)((uint8_t *)scan2 + obj->size);
+	context.scan2 = (Obj *)((uint8_t *)context.scan2 + obj->size);
 
     // Put a tombstone at the location where the object used to occupy, so that the following call
     // of forward() can find the object's new location.
@@ -278,119 +283,119 @@ void *alloc_semispace() {
 }
 
 // Copies the root objects.
-void forward_root_objects(void *root) {
-    Symbols = forward(Symbols);
-    for (void **frame = reinterpret_cast<void**>(root); frame; frame = *(void ***)frame)
+void forward_root_objects(Context& context) {
+	context.Symbols = forward(context, context.Symbols);
+    for (void **frame = reinterpret_cast<void**>(context.root); frame; frame = *(void ***)frame)
         for (int i = 1; frame[i] != ROOT_END; i++)
             if (frame[i])
-                frame[i] = forward(reinterpret_cast<Obj*>(frame[i]));
+                frame[i] = forward(context, reinterpret_cast<Obj*>(frame[i]));
 }
 
 // Implements Cheney's copying garbage collection algorithm.
 // http://en.wikipedia.org/wiki/Cheney%27s_algorithm
-void gc(void *root) {
-    assert(!gc_running);
-    gc_running = true;
+void gc(Context& context) {
+    assert(!context.gc_running);
+	context.gc_running = true;
 
     // Allocate a new semi-space.
-    from_space = memory;
-    memory = alloc_semispace();
+	context.from_space = context.memory;
+	context.memory = alloc_semispace();
 
     // Initialize the two pointers for GC. Initially they point to the beginning of the to-space.
-    scan1 = scan2 = reinterpret_cast<Obj*>(memory);
+	context.scan1 = context.scan2 = reinterpret_cast<Obj*>(context.memory);
 
     // Copy the GC root objects first. This moves the pointer scan2.
-    forward_root_objects(root);
+    forward_root_objects(context);
 
     // Copy the objects referenced by the GC root objects located between scan1 and scan2. Once it's
     // finished, all live objects (i.e. objects reachable from the root) will have been copied to
     // the to-space.
-    while (scan1 < scan2) {
-        switch (scan1->type) {
+    while (context.scan1 < context.scan2) {
+        switch (context.scan1->type) {
         case TINT:
         case TSYMBOL:
         case TPRIMITIVE:
             // Any of the above types does not contain a pointer to a GC-managed object.
             break;
         case TCELL:
-            scan1->car = forward(scan1->car);
-            scan1->cdr = forward(scan1->cdr);
+            context.scan1->car = forward(context, context.scan1->car);
+            context.scan1->cdr = forward(context, context.scan1->cdr);
             break;
         case TFUNCTION:
         case TMACRO:
-            scan1->params = forward(scan1->params);
-            scan1->body = forward(scan1->body);
-            scan1->env = forward(scan1->env);
+            context.scan1->params = forward(context, context.scan1->params);
+            context.scan1->body = forward(context, context.scan1->body);
+            context.scan1->env = forward(context, context.scan1->env);
             break;
         case TENV:
-            scan1->vars = forward(scan1->vars);
-            scan1->up = forward(scan1->up);
+            context.scan1->vars = forward(context, context.scan1->vars);
+            context.scan1->up = forward(context, context.scan1->up);
             break;
         default:
-            error("Bug: copy: unknown type %d", scan1->type);
+            error("Bug: copy: unknown type %d", context.scan1->type);
         }
-        scan1 = (Obj *)((uint8_t *)scan1 + scan1->size);
+		context.scan1 = (Obj *)((uint8_t *)context.scan1 + context.scan1->size);
     }
 
     // Finish up GC.
-    munmap(from_space, MEMORY_SIZE);
-    size_t old_nused = mem_nused;
-    mem_nused = (size_t)((uint8_t *)scan1 - (uint8_t *)memory);
-    if (debug_gc)
-		std::fprintf(stderr, "GC: %zu bytes out of %zu bytes copied.\n", mem_nused, old_nused);
-    gc_running = false;
+    munmap(context.from_space, MEMORY_SIZE);
+    size_t old_nused = context.mem_nused;
+	context.mem_nused = (size_t)((uint8_t *)context.scan1 - (uint8_t *)context.memory);
+    if (context.debug_gc)
+		std::fprintf(stderr, "GC: %zu bytes out of %zu bytes copied.\n", context.mem_nused, old_nused);
+	context.gc_running = false;
 }
 
 //======================================================================
 // Constructors
 //======================================================================
 
-Obj *make_int(void *root, int value) {
-    Obj *r = alloc(root, TINT, sizeof(int));
+Obj *make_int(Context& context, int value) {
+    Obj *r = alloc(context, TINT, sizeof(int));
     r->value = value;
     return r;
 }
 
-Obj *cons(void *root, Obj **car, Obj **cdr) {
-    Obj *cell = alloc(root, TCELL, sizeof(Obj *) * 2);
+Obj *cons(Context& context, Obj **car, Obj **cdr) {
+    Obj *cell = alloc(context, TCELL, sizeof(Obj *) * 2);
     cell->car = *car;
     cell->cdr = *cdr;
     return cell;
 }
 
-Obj *make_symbol(void *root, const char *name) {
-    Obj *sym = alloc(root, TSYMBOL, strlen(name) + 1);
+Obj *make_symbol(Context& context, const char *name) {
+    Obj *sym = alloc(context, TSYMBOL, strlen(name) + 1);
 	std::strcpy(sym->name, name);
     return sym;
 }
 
-Obj *make_primitive(void *root, Primitive *fn) {
-    Obj *r = alloc(root, TPRIMITIVE, sizeof(Primitive *));
+Obj *make_primitive(Context& context, Primitive *fn) {
+    Obj *r = alloc(context, TPRIMITIVE, sizeof(Primitive *));
     r->fn = fn;
     return r;
 }
 
-Obj *make_function(void *root, Obj **env, int type, Obj **params, Obj **body) {
+Obj *make_function(Context& context, Obj **env, int type, Obj **params, Obj **body) {
     assert(type == TFUNCTION || type == TMACRO);
-    Obj *r = alloc(root, type, sizeof(Obj *) * 3);
+    Obj *r = alloc(context, type, sizeof(Obj *) * 3);
     r->params = *params;
     r->body = *body;
     r->env = *env;
     return r;
 }
 
-Obj *make_env(void *root, Obj **vars, Obj **up) {
-    Obj *r = alloc(root, TENV, sizeof(Obj *) * 2);
+Obj *make_env(Context& context, Obj **vars, Obj **up) {
+    Obj *r = alloc(context, TENV, sizeof(Obj *) * 2);
     r->vars = *vars;
     r->up = *up;
     return r;
 }
 
 // Returns ((x . y) . a)
-Obj *acons(void *root, Obj **x, Obj **y, Obj **a) {
+Obj *acons(Context& context, Obj **x, Obj **y, Obj **a) {
     DEFINE1(cell);
-    *cell = cons(root, x, y);
-    return cons(root, cell, a);
+    *cell = cons(context, x, y);
+    return cons(context, cell, a);
 }
 
 //======================================================================
@@ -403,7 +408,7 @@ constexpr int SYMBOL_MAX_LEN = 200;
 constexpr char symbol_chars[] = "~!@#$%^&*-_=+:/?<>";
 
 template<typename ScannerT>
-Obj *read_expr(ScannerT& scanner, void *root);
+Obj *read_expr(ScannerT& scanner, Context& context);
 
 // Destructively reverses the given list.
 Obj *reverse(Obj *p) {
@@ -452,47 +457,47 @@ void skip_line(ScannerT& scanner) {
 
 // Reads a list. Note that '(' has already been read.
 template<typename ScannerT>
-Obj *read_list(ScannerT& scanner, void *root) {
+Obj *read_list(ScannerT& scanner, Context& context) {
     DEFINE3(obj, head, last);
     *head = Nil;
     for (;;) {
-        *obj = read_expr(scanner, root);
+        *obj = read_expr(scanner, context);
         if (!*obj)
             error("Unclosed parenthesis");
         if (*obj == Cparen)
             return reverse(*head);
         if (*obj == Dot) {
-            *last = read_expr(scanner, root);
-            if (read_expr(scanner, root) != Cparen)
+            *last = read_expr(scanner, context);
+            if (read_expr(scanner, context) != Cparen)
                 error("Closed parenthesis expected after dot");
             Obj *ret = reverse(*head);
             (*head)->cdr = *last;
             return ret;
         }
-        *head = cons(root, obj, head);
+        *head = cons(context, obj, head);
     }
 }
 
 // May create a new symbol. If there's a symbol with the same name, it will not create a new symbol
 // but return the existing one.
-Obj *intern(void *root, const char *name) {
-    for (Obj *p = Symbols; p != Nil; p = p->cdr)
+Obj *intern(Context& context, const char *name) {
+    for (Obj *p = context.Symbols; p != Nil; p = p->cdr)
         if (std::strcmp(name, p->car->name) == 0)
             return p->car;
     DEFINE1(sym);
-    *sym = make_symbol(root, name);
-    Symbols = cons(root, sym, &Symbols);
+    *sym = make_symbol(context, name);
+	context.Symbols = cons(context, sym, &context.Symbols);
     return *sym;
 }
 
 // Reader marcro ' (single quote). It reads an expression and returns (quote <expr>).
 template<typename ScannerT>
-Obj *read_quote(ScannerT& scanner, void *root) {
+Obj *read_quote(ScannerT& scanner, Context& context) {
     DEFINE2(sym, tmp);
-    *sym = intern(root, "quote");
-    *tmp = read_expr(scanner, root);
-    *tmp = cons(root, tmp, &Nil);
-    *tmp = cons(root, sym, tmp);
+    *sym = intern(context, "quote");
+    *tmp = read_expr(scanner, context);
+    *tmp = cons(context, tmp, &Nil);
+    *tmp = cons(context, sym, tmp);
     return *tmp;
 }
 
@@ -504,7 +509,7 @@ int read_number(ScannerT& scanner, int val) {
 }
 
 template<typename ScannerT>
-Obj *read_symbol(ScannerT& scanner, void *root, char c) {
+Obj *read_symbol(ScannerT& scanner, Context& context, char c) {
     char buf[SYMBOL_MAX_LEN + 1];
     buf[0] = c;
     int len = 1;
@@ -514,11 +519,11 @@ Obj *read_symbol(ScannerT& scanner, void *root, char c) {
         buf[len++] = getchar();
     }
     buf[len] = '\0';
-    return intern(root, buf);
+    return intern(context, buf);
 }
 
 template<typename ScannerT>
-Obj *read_expr(ScannerT& scanner, void *root) {
+Obj *read_expr(ScannerT& scanner, Context& context) {
     for (;;) {
 		int c = scanner.read();
         if (c == ' ' || c == '\n' || c == '\r' || c == '\t')
@@ -530,19 +535,19 @@ Obj *read_expr(ScannerT& scanner, void *root) {
             continue;
         }
         if (c == '(')
-            return read_list(scanner, root);
+            return read_list(scanner, context);
         if (c == ')')
             return Cparen;
         if (c == '.')
             return Dot;
         if (c == '\'')
-            return read_quote(scanner, root);
+            return read_quote(scanner, context);
         if (std::isdigit(c))
-            return make_int(root, read_number(scanner, c - '0'));
+            return make_int(context, read_number(scanner, c - '0'));
         if (c == '-' && std::isdigit(scanner.peek()))
-            return make_int(root, -read_number(scanner, 0));
+            return make_int(context, -read_number(scanner, 0));
         if (std::isalpha(c) || std::strchr(symbol_chars, c))
-            return read_symbol(scanner, root, c);
+            return read_symbol(scanner, context, c);
         error("Don't know how to handle %c", c);
     }
 }
@@ -597,24 +602,24 @@ int length(Obj *list) {
 // Evaluator
 //======================================================================
 
-Obj *eval(void *root, Obj **env, Obj **obj);
+Obj *eval(Context& context, Obj **env, Obj **obj);
 
-void add_variable(void *root, Obj **env, Obj **sym, Obj **val) {
+void add_variable(Context& context, Obj **env, Obj **sym, Obj **val) {
     DEFINE2(vars, tmp);
     *vars = (*env)->vars;
-    *tmp = acons(root, sym, val, vars);
+    *tmp = acons(context, sym, val, vars);
     (*env)->vars = *tmp;
 }
 
-void add_primitive(void *root, Obj **env, const char *name, Primitive *fn) {
+void add_primitive(Context& context, Obj **env, const char *name, Primitive *fn) {
 	DEFINE2(sym, prim);
-	*sym = intern(root, name);
-	*prim = make_primitive(root, fn);
-	add_variable(root, env, sym, prim);
+	*sym = intern(context, name);
+	*prim = make_primitive(context, fn);
+	add_variable(context, env, sym, prim);
 }
 
 // Returns a newly created environment frame.
-Obj *push_env(void *root, Obj **env, Obj **vars, Obj **vals) {
+Obj *push_env(Context& context, Obj **env, Obj **vars, Obj **vals) {
     DEFINE3(map, sym, val);
     *map = Nil;
     for (; (*vars)->type == TCELL; *vars = (*vars)->cdr, *vals = (*vals)->cdr) {
@@ -622,31 +627,31 @@ Obj *push_env(void *root, Obj **env, Obj **vars, Obj **vals) {
             error("Cannot apply function: number of argument does not match");
         *sym = (*vars)->car;
         *val = (*vals)->car;
-        *map = acons(root, sym, val, map);
+        *map = acons(context, sym, val, map);
     }
     if (*vars != Nil)
-        *map = acons(root, vars, vals, map);
-    return make_env(root, map, env);
+        *map = acons(context, vars, vals, map);
+    return make_env(context, map, env);
 }
 
 // Evaluates the list elements from head and returns the last return value.
-Obj *progn(void *root, Obj **env, Obj **list) {
+Obj *progn(Context& context, Obj **env, Obj **list) {
     DEFINE2(lp, r);
     for (*lp = *list; *lp != Nil; *lp = (*lp)->cdr) {
         *r = (*lp)->car;
-        *r = eval(root, env, r);
+        *r = eval(context, env, r);
     }
     return *r;
 }
 
 // Evaluates all the list elements and returns their return values as a new list.
-Obj *eval_list(void *root, Obj **env, Obj **list) {
+Obj *eval_list(Context& context, Obj **env, Obj **list) {
     DEFINE4(head, lp, expr, result);
     *head = Nil;
     for (lp = list; *lp != Nil; *lp = (*lp)->cdr) {
         *expr = (*lp)->car;
-        *result = eval(root, env, expr);
-        *head = cons(root, result, head);
+        *result = eval(context, env, expr);
+        *head = cons(context, result, head);
     }
     return reverse(*head);
 }
@@ -655,25 +660,25 @@ bool is_list(Obj *obj) {
     return obj == Nil || obj->type == TCELL;
 }
 
-Obj *apply_func(void *root, Obj **env, Obj **fn, Obj **args) {
+Obj *apply_func(Context& context, Obj **env, Obj **fn, Obj **args) {
     DEFINE3(params, newenv, body);
     *params = (*fn)->params;
     *newenv = (*fn)->env;
-    *newenv = push_env(root, newenv, params, args);
+    *newenv = push_env(context, newenv, params, args);
     *body = (*fn)->body;
-    return progn(root, newenv, body);
+    return progn(context, newenv, body);
 }
 
 // Apply fn with args.
-Obj *apply(void *root, Obj **env, Obj **fn, Obj **args) {
+Obj *apply(Context& context, Obj **env, Obj **fn, Obj **args) {
     if (!is_list(*args))
         error("argument must be a list");
     if ((*fn)->type == TPRIMITIVE)
-        return (*fn)->fn(root, env, args);
+        return (*fn)->fn(context, env, args);
     if ((*fn)->type == TFUNCTION) {
         DEFINE1(eargs);
-        *eargs = eval_list(root, env, args);
-        return apply_func(root, env, fn, eargs);
+        *eargs = eval_list(context, env, args);
+        return apply_func(context, env, fn, eargs);
     }
     error("not supported");
 }
@@ -691,7 +696,7 @@ Obj *find(Obj **env, Obj *sym) {
 }
 
 // Expands the given macro application form.
-Obj *macroexpand(void *root, Obj **env, Obj **obj) {
+Obj *macroexpand(Context& context, Obj **env, Obj **obj) {
     if ((*obj)->type != TCELL || (*obj)->car->type != TSYMBOL)
         return *obj;
     DEFINE3(bind, macro, args);
@@ -700,11 +705,11 @@ Obj *macroexpand(void *root, Obj **env, Obj **obj) {
         return *obj;
     *macro = (*bind)->cdr;
     *args = (*obj)->cdr;
-    return apply_func(root, env, macro, args);
+    return apply_func(context, env, macro, args);
 }
 
 // Evaluates the S expression.
-static Obj *eval(void *root, Obj **env, Obj **obj) {
+static Obj *eval(Context& context, Obj **env, Obj **obj) {
     switch ((*obj)->type) {
     case TINT:
     case TPRIMITIVE:
@@ -723,15 +728,15 @@ static Obj *eval(void *root, Obj **env, Obj **obj) {
     case TCELL: {
         // Function application form
         DEFINE3(fn, expanded, args);
-        *expanded = macroexpand(root, env, obj);
+        *expanded = macroexpand(context, env, obj);
         if (*expanded != *obj)
-            return eval(root, env, expanded);
+            return eval(context, env, expanded);
         *fn = (*obj)->car;
-        *fn = eval(root, env, fn);
+        *fn = eval(context, env, fn);
         *args = (*obj)->cdr;
         if ((*fn)->type != TPRIMITIVE && (*fn)->type != TFUNCTION)
             error("The head of a list must be a function");
-        return apply(root, env, fn, args);
+        return apply(context, env, fn, args);
     }
     default:
         error("Bug: eval: Unknown tag type: %d", (*obj)->type);
@@ -744,39 +749,39 @@ namespace {
 //======================================================================
 
 // 'expr
-Obj *prim_quote(void *root, Obj **env, Obj **list) {
+Obj *prim_quote(Context& context, Obj **env, Obj **list) {
     if (length(*list) != 1)
         error("Malformed quote");
     return (*list)->car;
 }
 
 // (cons expr expr)
-Obj *prim_cons(void *root, Obj **env, Obj **list) {
+Obj *prim_cons(Context& context, Obj **env, Obj **list) {
     if (length(*list) != 2)
         error("Malformed cons");
-    Obj *cell = eval_list(root, env, list);
+    Obj *cell = eval_list(context, env, list);
     cell->cdr = cell->cdr->car;
     return cell;
 }
 
 // (car <cell>)
-Obj *prim_car(void *root, Obj **env, Obj **list) {
-    Obj *args = eval_list(root, env, list);
+Obj *prim_car(Context& context, Obj **env, Obj **list) {
+    Obj *args = eval_list(context, env, list);
     if (args->car->type != TCELL || args->cdr != Nil)
         error("Malformed car");
     return args->car->car;
 }
 
 // (cdr <cell>)
-Obj *prim_cdr(void *root, Obj **env, Obj **list) {
-    Obj *args = eval_list(root, env, list);
+Obj *prim_cdr(Context& context, Obj **env, Obj **list) {
+    Obj *args = eval_list(context, env, list);
     if (args->car->type != TCELL || args->cdr != Nil)
         error("Malformed cdr");
     return args->car->cdr;
 }
 
 // (setq <symbol> expr)
-Obj *prim_setq(void *root, Obj **env, Obj **list) {
+Obj *prim_setq(Context& context, Obj **env, Obj **list) {
     if (length(*list) != 2 || (*list)->car->type != TSYMBOL)
         error("Malformed setq");
     DEFINE2(bind, value);
@@ -784,15 +789,15 @@ Obj *prim_setq(void *root, Obj **env, Obj **list) {
     if (!*bind)
         error("Unbound variable %s", (*list)->car->name);
     *value = (*list)->cdr->car;
-    *value = eval(root, env, value);
+    *value = eval(context, env, value);
     (*bind)->cdr = *value;
     return *value;
 }
 
 // (setcar <cell> expr)
-Obj *prim_setcar(void *root, Obj **env, Obj **list) {
+Obj *prim_setcar(Context& context, Obj **env, Obj **list) {
     DEFINE1(args);
-    *args = eval_list(root, env, list);
+    *args = eval_list(context, env, list);
     if (length(*args) != 2 || (*args)->car->type != TCELL)
         error("Malformed setcar");
     (*args)->car->car = (*args)->cdr->car;
@@ -800,54 +805,54 @@ Obj *prim_setcar(void *root, Obj **env, Obj **list) {
 }
 
 // (while cond expr ...)
-Obj *prim_while(void *root, Obj **env, Obj **list) {
+Obj *prim_while(Context& context, Obj **env, Obj **list) {
     if (length(*list) < 2)
         error("Malformed while");
     DEFINE2(cond, exprs);
     *cond = (*list)->car;
-    while (eval(root, env, cond) != Nil) {
+    while (eval(context, env, cond) != Nil) {
         *exprs = (*list)->cdr;
-        eval_list(root, env, exprs);
+        eval_list(context, env, exprs);
     }
     return Nil;
 }
 
 // (gensym)
-Obj *prim_gensym(void *root, Obj **env, Obj **list) {
+Obj *prim_gensym(Context& context, Obj **env, Obj **list) {
   static int count = 0;
   char buf[10];
   snprintf(buf, sizeof(buf), "G__%d", count++);
-  return make_symbol(root, buf);
+  return make_symbol(context, buf);
 }
 
 // (+ <integer> ...)
-Obj *prim_plus(void *root, Obj **env, Obj **list) {
+Obj *prim_plus(Context& context, Obj **env, Obj **list) {
     int sum = 0;
-    for (Obj *args = eval_list(root, env, list); args != Nil; args = args->cdr) {
+    for (Obj *args = eval_list(context, env, list); args != Nil; args = args->cdr) {
         if (args->car->type != TINT)
             error("+ takes only numbers");
         sum += args->car->value;
     }
-    return make_int(root, sum);
+    return make_int(context, sum);
 }
 
 // (- <integer> ...)
-Obj *prim_minus(void *root, Obj **env, Obj **list) {
-    Obj *args = eval_list(root, env, list);
+Obj *prim_minus(Context& context, Obj **env, Obj **list) {
+    Obj *args = eval_list(context, env, list);
     for (Obj *p = args; p != Nil; p = p->cdr)
         if (p->car->type != TINT)
             error("- takes only numbers");
     if (args->cdr == Nil)
-        return make_int(root, -args->car->value);
+        return make_int(context, -args->car->value);
     int r = args->car->value;
     for (Obj *p = args->cdr; p != Nil; p = p->cdr)
         r -= p->car->value;
-    return make_int(root, r);
+    return make_int(context, r);
 }
 
 // (< <integer> <integer>)
-Obj *prim_lt(void *root, Obj **env, Obj **list) {
-    Obj *args = eval_list(root, env, list);
+Obj *prim_lt(Context& context, Obj **env, Obj **list) {
+    Obj *args = eval_list(context, env, list);
     if (length(args) != 2)
         error("malformed <");
     Obj *x = args->car;
@@ -857,7 +862,7 @@ Obj *prim_lt(void *root, Obj **env, Obj **list) {
     return x->value < y->value ? True : Nil;
 }
 
-Obj *handle_function(void *root, Obj **env, Obj **list, int type) {
+Obj *handle_function(Context& context, Obj **env, Obj **list, int type) {
     if ((*list)->type != TCELL || !is_list((*list)->car) || (*list)->cdr->type != TCELL)
         error("Malformed lambda");
     Obj *p = (*list)->car;
@@ -869,85 +874,85 @@ Obj *handle_function(void *root, Obj **env, Obj **list, int type) {
     DEFINE2(params, body);
     *params = (*list)->car;
     *body = (*list)->cdr;
-    return make_function(root, env, type, params, body);
+    return make_function(context, env, type, params, body);
 }
 
 // (lambda (<symbol> ...) expr ...)
-Obj *prim_lambda(void *root, Obj **env, Obj **list) {
-    return handle_function(root, env, list, TFUNCTION);
+Obj *prim_lambda(Context& context, Obj **env, Obj **list) {
+    return handle_function(context, env, list, TFUNCTION);
 }
 
-Obj *handle_defun(void *root, Obj **env, Obj **list, int type) {
+Obj *handle_defun(Context& context, Obj **env, Obj **list, int type) {
     if ((*list)->car->type != TSYMBOL || (*list)->cdr->type != TCELL)
         error("Malformed defun");
     DEFINE3(fn, sym, rest);
     *sym = (*list)->car;
     *rest = (*list)->cdr;
-    *fn = handle_function(root, env, rest, type);
-    add_variable(root, env, sym, fn);
+    *fn = handle_function(context, env, rest, type);
+    add_variable(context, env, sym, fn);
     return *fn;
 }
 
 // (defun <symbol> (<symbol> ...) expr ...)
-Obj *prim_defun(void *root, Obj **env, Obj **list) {
-    return handle_defun(root, env, list, TFUNCTION);
+Obj *prim_defun(Context& context, Obj **env, Obj **list) {
+    return handle_defun(context, env, list, TFUNCTION);
 }
 
 // (define <symbol> expr)
-Obj *prim_define(void *root, Obj **env, Obj **list) {
+Obj *prim_define(Context& context, Obj **env, Obj **list) {
     if (length(*list) != 2 || (*list)->car->type != TSYMBOL)
         error("Malformed define");
     DEFINE2(sym, value);
     *sym = (*list)->car;
     *value = (*list)->cdr->car;
-    *value = eval(root, env, value);
-    add_variable(root, env, sym, value);
+    *value = eval(context, env, value);
+    add_variable(context, env, sym, value);
     return *value;
 }
 
 // (defmacro <symbol> (<symbol> ...) expr ...)
-Obj *prim_defmacro(void *root, Obj **env, Obj **list) {
-    return handle_defun(root, env, list, TMACRO);
+Obj *prim_defmacro(Context& context, Obj **env, Obj **list) {
+    return handle_defun(context, env, list, TMACRO);
 }
 
 // (macroexpand expr)
-Obj *prim_macroexpand(void *root, Obj **env, Obj **list) {
+Obj *prim_macroexpand(Context& context, Obj **env, Obj **list) {
     if (length(*list) != 1)
         error("Malformed macroexpand");
     DEFINE1(body);
     *body = (*list)->car;
-    return macroexpand(root, env, body);
+    return macroexpand(context, env, body);
 }
 
 // (println expr)
-Obj *prim_println(void *root, Obj **env, Obj **list) {
+Obj *prim_println(Context& context, Obj **env, Obj **list) {
     DEFINE1(tmp);
     *tmp = (*list)->car;
-    print(eval(root, env, tmp));
+    print(eval(context, env, tmp));
     std::printf("\n");
     return Nil;
 }
 
 // (if expr expr expr ...)
-Obj *prim_if(void *root, Obj **env, Obj **list) {
+Obj *prim_if(Context& context, Obj **env, Obj **list) {
     if (length(*list) < 2)
         error("Malformed if");
     DEFINE3(cond, then, els);
     *cond = (*list)->car;
-    *cond = eval(root, env, cond);
+    *cond = eval(context, env, cond);
     if (*cond != Nil) {
         *then = (*list)->cdr->car;
-        return eval(root, env, then);
+        return eval(context, env, then);
     }
     *els = (*list)->cdr->cdr;
-    return *els == Nil ? Nil : progn(root, env, els);
+    return *els == Nil ? Nil : progn(context, env, els);
 }
 
 // (= <integer> <integer>)
-Obj *prim_num_eq(void *root, Obj **env, Obj **list) {
+Obj *prim_num_eq(Context& context, Obj **env, Obj **list) {
     if (length(*list) != 2)
         error("Malformed =");
-    Obj *values = eval_list(root, env, list);
+    Obj *values = eval_list(context, env, list);
     Obj *x = values->car;
     Obj *y = values->cdr->car;
     if (x->type != TINT || y->type != TINT)
@@ -956,40 +961,40 @@ Obj *prim_num_eq(void *root, Obj **env, Obj **list) {
 }
 
 // (eq expr expr)
-Obj *prim_eq(void *root, Obj **env, Obj **list) {
+Obj *prim_eq(Context& context, Obj **env, Obj **list) {
     if (length(*list) != 2)
         error("Malformed eq");
-    Obj *values = eval_list(root, env, list);
+    Obj *values = eval_list(context, env, list);
     return values->car == values->cdr->car ? True : Nil;
 }
 
-void define_constants(void *root, Obj **env) {
+void define_constants(Context& context, Obj **env) {
     DEFINE1(sym);
-    *sym = intern(root, "t");
-    add_variable(root, env, sym, &True);
+    *sym = intern(context, "t");
+    add_variable(context, env, sym, &True);
 }
 
-void define_primitives(void *root, Obj **env) {
-    add_primitive(root, env, "quote", prim_quote);
-    add_primitive(root, env, "cons", prim_cons);
-    add_primitive(root, env, "car", prim_car);
-    add_primitive(root, env, "cdr", prim_cdr);
-    add_primitive(root, env, "setq", prim_setq);
-    add_primitive(root, env, "setcar", prim_setcar);
-    add_primitive(root, env, "while", prim_while);
-    add_primitive(root, env, "gensym", prim_gensym);
-    add_primitive(root, env, "+", prim_plus);
-    add_primitive(root, env, "-", prim_minus);
-    add_primitive(root, env, "<", prim_lt);
-    add_primitive(root, env, "define", prim_define);
-    add_primitive(root, env, "defun", prim_defun);
-    add_primitive(root, env, "defmacro", prim_defmacro);
-    add_primitive(root, env, "macroexpand", prim_macroexpand);
-    add_primitive(root, env, "lambda", prim_lambda);
-    add_primitive(root, env, "if", prim_if);
-    add_primitive(root, env, "=", prim_num_eq);
-    add_primitive(root, env, "eq", prim_eq);
-    add_primitive(root, env, "println", prim_println);
+void define_primitives(Context& context, Obj **env) {
+    add_primitive(context, env, "quote", prim_quote);
+    add_primitive(context, env, "cons", prim_cons);
+    add_primitive(context, env, "car", prim_car);
+    add_primitive(context, env, "cdr", prim_cdr);
+    add_primitive(context, env, "setq", prim_setq);
+    add_primitive(context, env, "setcar", prim_setcar);
+    add_primitive(context, env, "while", prim_while);
+    add_primitive(context, env, "gensym", prim_gensym);
+    add_primitive(context, env, "+", prim_plus);
+    add_primitive(context, env, "-", prim_minus);
+    add_primitive(context, env, "<", prim_lt);
+    add_primitive(context, env, "define", prim_define);
+    add_primitive(context, env, "defun", prim_defun);
+    add_primitive(context, env, "defmacro", prim_defmacro);
+    add_primitive(context, env, "macroexpand", prim_macroexpand);
+    add_primitive(context, env, "lambda", prim_lambda);
+    add_primitive(context, env, "if", prim_if);
+    add_primitive(context, env, "=", prim_num_eq);
+    add_primitive(context, env, "eq", prim_eq);
+    add_primitive(context, env, "println", prim_println);
 }
 }
 }
@@ -1006,32 +1011,32 @@ static bool getEnvFlag(const char *name) {
 
 int main(int argc, char **argv) {
 	using namespace minilisp;
+	Context context;
     // Debug flags
-    debug_gc = getEnvFlag("MINILISP_DEBUG_GC");
-    always_gc = getEnvFlag("MINILISP_ALWAYS_GC");
+    context.debug_gc = getEnvFlag("MINILISP_DEBUG_GC");
+    context.always_gc = getEnvFlag("MINILISP_ALWAYS_GC");
 
     // Memory allocation
-    memory = alloc_semispace();
+	context.memory = alloc_semispace();
 
     // Constants and primitives
-    Symbols = Nil;
-    void *root = NULL;
+	context.Symbols = Nil;
     DEFINE2(env, expr);
-    *env = make_env(root, &Nil, &Nil);
-    define_constants(root, env);
-    define_primitives(root, env);
+    *env = make_env(context, &Nil, &Nil);
+    define_constants(context, env);
+    define_primitives(context, env);
 
     // The main loop
 	FileScanner fs;
     for (;;) {
-        *expr = read_expr(fs, root);
+        *expr = read_expr(fs, context);
         if (!*expr)
             return 0;
         if (*expr == Cparen)
             error("Stray close parenthesis");
         if (*expr == Dot)
             error("Stray dot");
-        print(eval(root, env, expr));
+        print(eval(context, env, expr));
         std::printf("\n");
     }
 }
