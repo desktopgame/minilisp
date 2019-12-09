@@ -30,7 +30,7 @@ ATTR_NORETURN void error(const char *fmt, ...) {
     std::vfprintf(stderr, fmt, ap);
 	std::fprintf(stderr, "\n");
     va_end(ap);
-	std::exit(1);
+	throw std::logic_error("lisp interpreter was crash.");
 }
 
 //======================================================================
