@@ -23,7 +23,7 @@
 #define munmap(addr, size) (free(addr))
 #endif
 
-static ATTR_NORETURN void error(char *fmt, ...) {
+static ATTR_NORETURN void error(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -102,10 +102,15 @@ typedef struct Obj {
 } Obj;
 
 // Constants
-static Obj *True = &(Obj){ TTRUE };
-static Obj *Nil = &(Obj){ TNIL };
-static Obj *Dot = &(Obj){ TDOT };
-static Obj *Cparen = &(Obj){ TCPAREN };
+static Obj TrueV = Obj{ TTRUE };
+static Obj NilV = Obj{ TNIL };
+static Obj DotV = Obj{ TDOT };
+static Obj CparenV = Obj{ TCPAREN };
+
+static Obj *True = &TrueV;
+static Obj *Nil = &NilV;
+static Obj *Dot = &DotV;
+static Obj *Cparen = &CparenV;
 
 // The list containing all symbols. Such data structure is traditionally called the "obarray", but I
 // avoid using it as a variable name as this is not an array but a list.
@@ -223,7 +228,7 @@ static Obj *alloc(void *root, int type, size_t size) {
         error("Memory exhausted");
 
     // Allocate the object.
-    Obj *obj = (unsigned char*)memory + mem_nused;
+    Obj *obj = reinterpret_cast<Obj*>((unsigned char*)memory + mem_nused);
     obj->type = type;
     obj->size = size;
     mem_nused += size;
@@ -254,7 +259,7 @@ static inline Obj *forward(Obj *obj) {
     // The pointer is pointing to the from-space, but the object there was a tombstone. Follow the
     // forwarding pointer to find the new location of the object.
     if (obj->type == TMOVED)
-        return obj->moved;
+        return reinterpret_cast<Obj*>(obj->moved);
 
     // Otherwise, the object has not been moved yet. Move it.
     Obj *newloc = scan2;
@@ -275,10 +280,10 @@ static void *alloc_semispace() {
 // Copies the root objects.
 static void forward_root_objects(void *root) {
     Symbols = forward(Symbols);
-    for (void **frame = root; frame; frame = *(void ***)frame)
+    for (void **frame = reinterpret_cast<void**>(root); frame; frame = *(void ***)frame)
         for (int i = 1; frame[i] != ROOT_END; i++)
             if (frame[i])
-                frame[i] = forward(frame[i]);
+                frame[i] = forward(reinterpret_cast<Obj*>(frame[i]));
 }
 
 // Implements Cheney's copying garbage collection algorithm.
@@ -292,7 +297,7 @@ static void gc(void *root) {
     memory = alloc_semispace();
 
     // Initialize the two pointers for GC. Initially they point to the beginning of the to-space.
-    scan1 = scan2 = memory;
+    scan1 = scan2 = reinterpret_cast<Obj*>(memory);
 
     // Copy the GC root objects first. This moves the pointer scan2.
     forward_root_objects(root);
@@ -353,7 +358,7 @@ static Obj *cons(void *root, Obj **car, Obj **cdr) {
     return cell;
 }
 
-static Obj *make_symbol(void *root, char *name) {
+static Obj *make_symbol(void *root, const char *name) {
     Obj *sym = alloc(root, TSYMBOL, strlen(name) + 1);
     strcpy(sym->name, name);
     return sym;
@@ -455,7 +460,7 @@ static Obj *read_list(void *root) {
 
 // May create a new symbol. If there's a symbol with the same name, it will not create a new symbol
 // but return the existing one.
-static Obj *intern(void *root, char *name) {
+static Obj *intern(void *root, const char *name) {
     for (Obj *p = Symbols; p != Nil; p = p->cdr)
         if (strcmp(name, p->car->name) == 0)
             return p->car;
@@ -931,7 +936,7 @@ static Obj *prim_eq(void *root, Obj **env, Obj **list) {
     return values->car == values->cdr->car ? True : Nil;
 }
 
-static void add_primitive(void *root, Obj **env, char *name, Primitive *fn) {
+static void add_primitive(void *root, Obj **env, const char *name, Primitive *fn) {
     DEFINE2(sym, prim);
     *sym = intern(root, name);
     *prim = make_primitive(root, fn);
@@ -972,7 +977,7 @@ static void define_primitives(void *root, Obj **env) {
 //======================================================================
 
 // Returns true if the environment variable is defined and not the empty string.
-static bool getEnvFlag(char *name) {
+static bool getEnvFlag(const char *name) {
     char *val = getenv(name);
     return val && val[0];
 }
