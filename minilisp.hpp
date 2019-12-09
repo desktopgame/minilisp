@@ -113,6 +113,11 @@ Obj *Nil = &NilV;
 Obj *Dot = &DotV;
 Obj *Cparen = &CparenV;
 
+namespace {
+	bool getEnvFlag(const char *name);
+	void *alloc_semispace();
+}
+
 struct Context {
 	// The list containing all symbols. Such data structure is traditionally called the "obarray", but I
 	// avoid using it as a variable name as this is not an array but a list.
@@ -140,6 +145,19 @@ struct Context {
 
 
 	void* root;
+
+	explicit Context()
+	: Symbols(nullptr), memory(nullptr), from_space(nullptr),
+	  mem_nused(0), gc_running(false), debug_gc(false),
+	  always_gc(false), scan1(nullptr), scan2(nullptr),
+	  root(nullptr) {
+		// Debug flags
+		this->debug_gc = getEnvFlag("MINILISP_DEBUG_GC");
+		this->always_gc = getEnvFlag("MINILISP_ALWAYS_GC");
+		// Memory allocation
+		this->memory = alloc_semispace();
+		this->Symbols = Nil;
+	}
 };
 
 
@@ -276,10 +294,6 @@ inline Obj *forward(Context& context, Obj *obj) {
     obj->type = TMOVED;
     obj->moved = newloc;
     return newloc;
-}
-
-void *alloc_semispace() {
-    return mmap(NULL, MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 }
 
 // Copies the root objects.
@@ -996,6 +1010,16 @@ void define_primitives(Context& context, Obj **env) {
     add_primitive(context, env, "eq", prim_eq);
     add_primitive(context, env, "println", prim_println);
 }
+
+// Returns true if the environment variable is defined and not the empty string.
+bool getEnvFlag(const char *name) {
+	char *val = std::getenv(name);
+	return val && val[0];
+}
+
+void *alloc_semispace() {
+	return mmap(NULL, MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+}
 }
 }
 
@@ -1003,24 +1027,12 @@ void define_primitives(Context& context, Obj **env) {
 // Entry point
 //======================================================================
 
-// Returns true if the environment variable is defined and not the empty string.
-static bool getEnvFlag(const char *name) {
-    char *val = std::getenv(name);
-    return val && val[0];
-}
 
 int main(int argc, char **argv) {
 	using namespace minilisp;
 	Context context;
-    // Debug flags
-    context.debug_gc = getEnvFlag("MINILISP_DEBUG_GC");
-    context.always_gc = getEnvFlag("MINILISP_ALWAYS_GC");
 
-    // Memory allocation
-	context.memory = alloc_semispace();
-
-    // Constants and primitives
-	context.Symbols = Nil;
+	// Constants and primitives
     DEFINE2(env, expr);
     *env = make_env(context, &Nil, &Nil);
     define_constants(context, env);
