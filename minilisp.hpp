@@ -122,7 +122,7 @@ Obj *Symbols;
 //======================================================================
 
 // The size of the heap in byte
-#define MEMORY_SIZE 65536
+constexpr int MEMORY_SIZE = 65536;
 
 // The pointer pointing to the beginning of the current heap
 void *memory;
@@ -400,8 +400,8 @@ Obj *acons(void *root, Obj **x, Obj **y, Obj **a) {
 // This is a hand-written recursive-descendent parser.
 //======================================================================
 
-#define SYMBOL_MAX_LEN 200
-const char symbol_chars[] = "~!@#$%^&*-_=+:/?<>";
+constexpr int SYMBOL_MAX_LEN = 200;
+constexpr char symbol_chars[] = "~!@#$%^&*-_=+:/?<>";
 
 Obj *read_expr(void *root);
 
